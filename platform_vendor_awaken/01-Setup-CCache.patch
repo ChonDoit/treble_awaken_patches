@@ -1,0 +1,37 @@
+From c05d63062dc958b38150d1ce658936625834e65b Mon Sep 17 00:00:00 2001
+From: ChonDoit <thphantomblog@gmail.com>
+Date: Sat, 18 Jun 2022 00:55:49 +0000
+Subject: [PATCH] Setup CCache environment
+
+---
+ build/envsetup.sh | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/build/envsetup.sh b/build/envsetup.sh
+index ea99fa60..d5ae3419 100644
+--- a/build/envsetup.sh
++++ b/build/envsetup.sh
+@@ -947,3 +947,20 @@ function fixup_common_out_dir() {
+         mkdir -p ${common_out_dir}
+     fi
+ }
++
++# Check and set ccache path on envsetup
++if [ -z ${CCACHE_EXEC} ]; then
++	ccache_path=$(which ccache)
++	if [ ! -z "$ccache_path" ]; then
++		mkdir /mnt/ccache
++		mount --bind ~/.ccache /mnt/ccache
++		export USE_CCACHE=1
++		export CCACHE_COMPRESS=1
++		export CCACHE_EXEC=/usr/bin/ccache
++		export CCACHE_DIR=/mnt/ccache
++		ccache -M 50G -F 0
++		echo "ccache found and CCACHE_EXEC has been set to : $ccache_path"
++	else
++		echo "ccache not found/installed!"
++	fi
++fi
+-- 
+2.17.1
+

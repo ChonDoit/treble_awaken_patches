@@ -1,0 +1,75 @@
+From 7cac37690a369e0a751c7c8869b68b2edbad5b34 Mon Sep 17 00:00:00 2001
+From: ChonDoit <thphantomblog@gmail.com>
+Date: Sat, 18 Jun 2022 19:06:30 +0000
+Subject: [PATCH] Build and Generated Kernel Headers Changes
+
+---
+ build/soong/Android.bp | 12 ------------
+ config/common.mk       | 14 +++-----------
+ 2 files changed, 3 insertions(+), 23 deletions(-)
+
+diff --git a/build/soong/Android.bp b/build/soong/Android.bp
+index c3a4c11b..4d6315b3 100644
+--- a/build/soong/Android.bp
++++ b/build/soong/Android.bp
+@@ -20,9 +20,6 @@ bootstrap_go_package {
+ awaken_generator {
+     name: "generated_kernel_includes",
+ 
+-    // The headers make command
+-    cmd: "$(PATH_OVERRIDE_SOONG) $(KERNEL_MAKE_CMD) $(KERNEL_MAKE_FLAGS) -C $(TARGET_KERNEL_SOURCE) O=$(KERNEL_BUILD_OUT_PREFIX)$(genDir) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) headers_install",
+-
+     // Directories that can be imported by a cc_* module generated_headers property
+     export_include_dirs: [
+         "usr/audio/include/uapi",
+@@ -31,15 +28,6 @@ awaken_generator {
+         "usr/include/audio/include/uapi",
+         "usr/techpack/audio/include",
+     ],
+-
+-    // Sources for dependency tracking
+-    dep_root: "$(TARGET_KERNEL_SOURCE)",
+-    dep_files: [
+-        "Makefile",
+-        "include/**/*",
+-        "arch/$(KERNEL_ARCH)/include/**/*",
+-        "techpack/audio/include/**/*",
+-    ],
+ }
+ 
+ cc_library_headers {
+diff --git a/config/common.mk b/config/common.mk
+index b400f107..eff42363 100644
+--- a/config/common.mk
++++ b/config/common.mk
+@@ -3,6 +3,9 @@ $(call inherit-product-if-exists, vendor/extra/product.mk)
+ 
+ PRODUCT_BRAND ?= AwakenOS
+ 
++USE_CCACHE := true
++TARGET_NO_KERNEL_OVERRIDE := true
++
+ PRODUCT_BUILD_PROP_OVERRIDES += BUILD_UTC_DATE=0
+ 
+ ifeq ($(PRODUCT_GMS_CLIENTID_BASE),)
+@@ -13,17 +16,6 @@ PRODUCT_SYSTEM_DEFAULT_PROPERTIES += \
+     ro.com.google.clientidbase=$(PRODUCT_GMS_CLIENTID_BASE)
+ endif
+ 
+-ifeq ($(TARGET_BUILD_VARIANT),eng)
+-# Disable ADB authentication
+-PRODUCT_SYSTEM_DEFAULT_PROPERTIES += ro.adb.secure=0
+-else
+-# Enable ADB authentication
+-PRODUCT_SYSTEM_DEFAULT_PROPERTIES += ro.adb.secure=1
+-
+-# Disable extra StrictMode features on all non-engineering builds
+-PRODUCT_SYSTEM_DEFAULT_PROPERTIES += persist.sys.strictmode.disable=true
+-endif
+-
+ # Backup Tool
+ PRODUCT_COPY_FILES += \
+     vendor/awaken/prebuilt/common/bin/backuptool.sh:install/bin/backuptool.sh \
+-- 
+2.17.1
+
