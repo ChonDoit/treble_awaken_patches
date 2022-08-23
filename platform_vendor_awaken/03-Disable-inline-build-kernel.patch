@@ -1,0 +1,48 @@
+From 39ce586518efb2c375dba06747f01b30b9ec16dc Mon Sep 17 00:00:00 2001
+From: ChonDoit <thphantomblog@gmail.com>
+Date: Fri, 19 Aug 2022 16:31:52 +0000
+Subject: [PATCH] Disable Inline Build Kernel and ro.adb.secure
+
+---
+ config/common.mk | 14 ++++++++------
+ 1 file changed, 8 insertions(+), 6 deletions(-)
+
+diff --git a/config/common.mk b/config/common.mk
+index 97f0963a..2f580bf4 100644
+--- a/config/common.mk
++++ b/config/common.mk
+@@ -3,6 +3,8 @@ $(call inherit-product-if-exists, vendor/extra/product.mk)
+ 
+ PRODUCT_BRAND ?= AwakenOS
+ 
++TARGET_NO_KERNEL_OVERRIDE := true
++
+ PRODUCT_BUILD_PROP_OVERRIDES += BUILD_UTC_DATE=0
+ 
+ ifeq ($(PRODUCT_GMS_CLIENTID_BASE),)
+@@ -13,16 +15,16 @@ PRODUCT_SYSTEM_DEFAULT_PROPERTIES += \
+     ro.com.google.clientidbase=$(PRODUCT_GMS_CLIENTID_BASE)
+ endif
+ 
+-ifeq ($(TARGET_BUILD_VARIANT),eng)
++#ifeq ($(TARGET_BUILD_VARIANT),eng)
+ # Disable ADB authentication
+-PRODUCT_SYSTEM_DEFAULT_PROPERTIES += ro.adb.secure=0
+-else
++#PRODUCT_SYSTEM_DEFAULT_PROPERTIES += ro.adb.secure=0
++#else
+ # Enable ADB authentication
+-PRODUCT_SYSTEM_DEFAULT_PROPERTIES += ro.adb.secure=1
++#PRODUCT_SYSTEM_DEFAULT_PROPERTIES += ro.adb.secure=1
+ 
+ # Disable extra StrictMode features on all non-engineering builds
+-PRODUCT_SYSTEM_DEFAULT_PROPERTIES += persist.sys.strictmode.disable=true
+-endif
++#PRODUCT_SYSTEM_DEFAULT_PROPERTIES += persist.sys.strictmode.disable=true
++#endif
+ 
+ ifneq ($(TARGET_BUILD_VARIANT),eng)
+ # Disable extra StrictMode features on all non-engineering builds
+-- 
+2.17.1
+

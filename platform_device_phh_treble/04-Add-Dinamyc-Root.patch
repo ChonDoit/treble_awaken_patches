@@ -3,6 +3,8 @@ From: ChonDoit <thphantomblog@gmail.com>
 Date: Sat, 4 Jun 2022 18:25:51 +0000
 Subject: [PATCH] Add Dinamyc Root
 
+- Call SuperUser app with PRODUCT_PACKAGES += SuperUser
+
 ---
  base.mk             |   1 +
  phh-prop-handler.sh |  34 ++++++++++++++++++++++++++++++++++
