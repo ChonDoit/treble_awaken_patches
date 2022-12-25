@@ -1,0 +1,47 @@
+From 56b5fc29f9b0c586b543602b7eaced5243d84d53 Mon Sep 17 00:00:00 2001
+From: ChonDoit <thphantomblog@gmail.com>
+Date: Fri, 7 Oct 2022 17:52:31 +0000
+Subject: [PATCH] Inherit call phh_gsi.mk
+
+---
+ config/common.mk | 17 ++++++-----------
+ 1 file changed, 6 insertions(+), 11 deletions(-)
+
+diff --git a/config/common.mk b/config/common.mk
+index 17a1bbf3..97128b96 100644
+--- a/config/common.mk
++++ b/config/common.mk
+@@ -3,6 +3,12 @@ $(call inherit-product-if-exists, vendor/extra/product.mk)
+ 
+ PRODUCT_BRAND ?= AwakenOS
+ 
++# PHH GSI
++$(call inherit-product, vendor/awaken/config/phh_gsi.mk)
++
++# Set Bootanimation at 720P
++TARGET_BOOT_ANIMATION_RES := 720
++
+ PRODUCT_BUILD_PROP_OVERRIDES += BUILD_UTC_DATE=0
+ 
+ ifeq ($(PRODUCT_GMS_CLIENTID_BASE),)
+@@ -13,17 +19,6 @@ PRODUCT_SYSTEM_DEFAULT_PROPERTIES += \
+     ro.com.google.clientidbase=$(PRODUCT_GMS_CLIENTID_BASE)
+ endif
+ 
+-ifeq ($(TARGET_BUILD_VARIANT),eng)
+-# Disable ADB authentication
+-PRODUCT_SYSTEM_DEFAULT_PROPERTIES += ro.adb.secure=0
+-else
+-# Enable ADB authentication
+-PRODUCT_SYSTEM_DEFAULT_PROPERTIES += ro.adb.secure=1
+-
+-# Disable extra StrictMode features on all non-engineering builds
+-PRODUCT_SYSTEM_DEFAULT_PROPERTIES += persist.sys.strictmode.disable=true
+-endif
+-
+ ifneq ($(TARGET_BUILD_VARIANT),eng)
+ # Disable extra StrictMode features on all non-engineering builds
+ PRODUCT_SYSTEM_DEFAULT_PROPERTIES += \
+-- 
+2.34.1
+

@@ -1,0 +1,1100 @@
+From d399dffd3c785f00e92ce1e475fa1a9ee1bff63d Mon Sep 17 00:00:00 2001
+From: ChonDoit <thphantomblog@gmail.com>
+Date: Sat, 24 Dec 2022 02:34:16 +0000
+Subject: [PATCH] Revert "Refactor UDFPS display logic and remove illumination"
+
+This reverts commit 6eda3a1d1a48f31591314185a814e54335f84098.
+---
+ .../BiometricFingerprintConstants.java        | 17 +++---
+ core/res/res/values/config.xml                |  3 +
+ core/res/res/values/symbols.xml               |  1 +
+ .../systemui/biometrics/AuthController.java   |  1 +
+ .../biometrics/AuthRippleController.kt        |  2 +-
+ .../biometrics/UdfpsAnimationView.java        |  8 +--
+ .../UdfpsAnimationViewController.kt           | 21 ++++---
+ .../systemui/biometrics/UdfpsController.java  | 54 +++++++++--------
+ .../biometrics/UdfpsControllerOverlay.kt      | 14 +++--
+ .../biometrics/UdfpsDisplayModeProvider.java  | 48 ---------------
+ .../systemui/biometrics/UdfpsDrawable.kt      |  2 +-
+ .../biometrics/UdfpsEnrollDrawable.java       |  2 +-
+ .../systemui/biometrics/UdfpsFpDrawable.kt    |  2 +-
+ .../systemui/biometrics/UdfpsHbmProvider.java | 55 ++++++++++++++++++
+ .../systemui/biometrics/UdfpsIlluminator.java | 41 +++++++++++++
+ .../biometrics/UdfpsKeyguardView.java         |  4 +-
+ .../android/systemui/biometrics/UdfpsView.kt  | 58 ++++++++++++++-----
+ .../systemui/dagger/SystemUIModule.java       |  4 +-
+ .../biometrics/UdfpsControllerOverlayTest.kt  | 33 +++++++----
+ .../biometrics/UdfpsControllerTest.java       | 50 ++++++++--------
+ .../systemui/biometrics/UdfpsViewTest.kt      | 29 +++++-----
+ 21 files changed, 275 insertions(+), 174 deletions(-)
+ delete mode 100644 packages/SystemUI/src/com/android/systemui/biometrics/UdfpsDisplayModeProvider.java
+ create mode 100644 packages/SystemUI/src/com/android/systemui/biometrics/UdfpsHbmProvider.java
+ create mode 100644 packages/SystemUI/src/com/android/systemui/biometrics/UdfpsIlluminator.java
+
+diff --git a/core/java/android/hardware/biometrics/BiometricFingerprintConstants.java b/core/java/android/hardware/biometrics/BiometricFingerprintConstants.java
+index 257ad7162e9e..c59d7571ee6d 100644
+--- a/core/java/android/hardware/biometrics/BiometricFingerprintConstants.java
++++ b/core/java/android/hardware/biometrics/BiometricFingerprintConstants.java
+@@ -315,17 +315,17 @@ public interface BiometricFingerprintConstants {
+     int FINGERPRINT_ACQUIRED_VENDOR_BASE = 1000;
+ 
+     /**
+-     * Whether the FingerprintAcquired message is a signal to disable the UDFPS display mode.
+-     * We want to disable the UDFPS mode as soon as possible to conserve power and provide better
+-     * UX. For example, prolonged high-brightness illumination of optical sensors can be unpleasant
+-     * to the user, can cause long term display burn-in, and can drain the battery faster.
++     * Whether the FingerprintAcquired message is a signal to turn off HBM
+      */
+-    static boolean shouldDisableUdfpsDisplayMode(@FingerprintAcquired int acquiredInfo) {
++    static boolean shouldTurnOffHbm(@FingerprintAcquired int acquiredInfo) {
+         switch (acquiredInfo) {
+             case FINGERPRINT_ACQUIRED_START:
+-                // Keep the UDFPS mode because the authentication just began.
++                // Authentication just began
+                 return false;
+             case FINGERPRINT_ACQUIRED_GOOD:
++                // Good image captured. Turn off HBM. Success/Reject comes after, which is when
++                // hideUdfpsOverlay will be called.
++                return true;
+             case FINGERPRINT_ACQUIRED_PARTIAL:
+             case FINGERPRINT_ACQUIRED_INSUFFICIENT:
+             case FINGERPRINT_ACQUIRED_IMAGER_DIRTY:
+@@ -334,12 +334,11 @@ public interface BiometricFingerprintConstants {
+             case FINGERPRINT_ACQUIRED_IMMOBILE:
+             case FINGERPRINT_ACQUIRED_TOO_BRIGHT:
+             case FINGERPRINT_ACQUIRED_VENDOR:
+-                // Disable the UDFPS mode because the image capture has finished. The overlay
+-                // can be hidden later, once the authentication result arrives.
++                // Bad image captured. Turn off HBM. Matcher will not run, so there's no need to
++                // keep HBM on.
+                 return true;
+             case FINGERPRINT_ACQUIRED_UNKNOWN:
+             default:
+-                // Keep the UDFPS mode in case of an unknown message.
+                 return false;
+         }
+     }
+diff --git a/core/res/res/values/config.xml b/core/res/res/values/config.xml
+index b03c2f012441..7ba992fd038a 100644
+--- a/core/res/res/values/config.xml
++++ b/core/res/res/values/config.xml
+@@ -4885,6 +4885,9 @@
+         -->
+     </array>
+ 
++    <!-- How long it takes for the HW to start illuminating after the illumination is requested. -->
++    <integer name="config_udfps_illumination_transition_ms">50</integer>
++
+     <!-- Indicates whether device has a power button fingerprint sensor. -->
+     <bool name="config_is_powerbutton_fps" translatable="false" >false</bool>
+ 
+diff --git a/core/res/res/values/symbols.xml b/core/res/res/values/symbols.xml
+index 888cd7a79bf6..e39203e15e12 100644
+--- a/core/res/res/values/symbols.xml
++++ b/core/res/res/values/symbols.xml
+@@ -2707,6 +2707,7 @@
+   <java-symbol type="bool" name="allow_test_udfps" />
+   <java-symbol type="array" name="config_udfps_sensor_props" />
+   <java-symbol type="array" name="config_sfps_sensor_props" />
++  <java-symbol type="integer" name="config_udfps_illumination_transition_ms" />
+   <java-symbol type="bool" name="config_is_powerbutton_fps" />
+   <java-symbol type="array" name="config_udfps_enroll_stage_thresholds" />
+   <java-symbol type="array" name="config_sfps_enroll_stage_thresholds" />
+diff --git a/packages/SystemUI/src/com/android/systemui/biometrics/AuthController.java b/packages/SystemUI/src/com/android/systemui/biometrics/AuthController.java
+index aae92adc5880..35bf3f3c3d94 100644
+--- a/packages/SystemUI/src/com/android/systemui/biometrics/AuthController.java
++++ b/packages/SystemUI/src/com/android/systemui/biometrics/AuthController.java
+@@ -293,6 +293,7 @@ public class AuthController extends CoreStartable implements CommandQueue.Callba
+                 }
+             });
+             mUdfpsController.setAuthControllerUpdateUdfpsLocation(this::updateUdfpsLocation);
++            mUdfpsController.setHalControlsIllumination(mUdfpsProps.get(0).halControlsIllumination);
+             mUdfpsBounds = mUdfpsProps.get(0).getLocation().getRect();
+         }
+ 
+diff --git a/packages/SystemUI/src/com/android/systemui/biometrics/AuthRippleController.kt b/packages/SystemUI/src/com/android/systemui/biometrics/AuthRippleController.kt
+index 4fee0837a52c..734e941dd1ce 100644
+--- a/packages/SystemUI/src/com/android/systemui/biometrics/AuthRippleController.kt
++++ b/packages/SystemUI/src/com/android/systemui/biometrics/AuthRippleController.kt
+@@ -266,7 +266,7 @@ class AuthRippleController @Inject constructor(
+             acquireInfo: Int
+         ) {
+             if (biometricSourceType == BiometricSourceType.FINGERPRINT &&
+-                    BiometricFingerprintConstants.shouldDisableUdfpsDisplayMode(acquireInfo) &&
++                    BiometricFingerprintConstants.shouldTurnOffHbm(acquireInfo) &&
+                     acquireInfo != BiometricFingerprintConstants.FINGERPRINT_ACQUIRED_GOOD) {
+                 // received an 'acquiredBad' message, so immediately retract
+                 mView.retractDwellRipple()
+diff --git a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsAnimationView.java b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsAnimationView.java
+index ad966125b9e8..9281eb8acb56 100644
+--- a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsAnimationView.java
++++ b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsAnimationView.java
+@@ -54,13 +54,13 @@ public abstract class UdfpsAnimationView extends FrameLayout {
+         getDrawable().onSensorRectUpdated(bounds);
+     }
+ 
+-    void onDisplayConfiguring() {
+-        getDrawable().setDisplayConfigured(true);
++    void onIlluminationStarting() {
++        getDrawable().setIlluminationShowing(true);
+         getDrawable().invalidateSelf();
+     }
+ 
+-    void onDisplayUnconfigured() {
+-        getDrawable().setDisplayConfigured(false);
++    void onIlluminationStopped() {
++        getDrawable().setIlluminationShowing(false);
+         getDrawable().invalidateSelf();
+     }
+ 
+diff --git a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsAnimationViewController.kt b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsAnimationViewController.kt
+index 3ad2bef97ac3..742c65c2f854 100644
+--- a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsAnimationViewController.kt
++++ b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsAnimationViewController.kt
+@@ -31,10 +31,10 @@ import java.io.PrintWriter
+ /**
+  * Handles:
+  * 1. registering for listeners when its view is attached and unregistering on view detached
+- * 2. pausing UDFPS when FingerprintManager may still be running but we temporarily want to hide
++ * 2. pausing udfps when fingerprintManager may still be running but we temporarily want to hide
+  * the affordance. this allows us to fade the view in and out nicely (see shouldPauseAuth)
+  * 3. sending events to its view including:
+- * - enabling and disabling of the UDFPS display mode
++ * - illumination events
+  * - sensor position changes
+  * - doze time event
+  */
+@@ -167,20 +167,19 @@ abstract class UdfpsAnimationViewController<T : UdfpsAnimationView>(
+     }
+ 
+     /**
+-     * The display began transitioning into the UDFPS mode and the fingerprint manager started
+-     * authenticating.
++     * Udfps has started illuminating and the fingerprint manager is working on authenticating.
+      */
+-    fun onDisplayConfiguring() {
+-        view.onDisplayConfiguring()
++    fun onIlluminationStarting() {
++        view.onIlluminationStarting()
+         view.postInvalidate()
+     }
+ 
+     /**
+-     * The display transitioned away from the UDFPS mode and the fingerprint manager stopped
+-     * authenticating.
++     * Udfps has stopped illuminating and the fingerprint manager is no longer attempting to
++     * authenticate.
+      */
+-    fun onDisplayUnconfigured() {
+-        view.onDisplayUnconfigured()
++    fun onIlluminationStopped() {
++        view.onIlluminationStopped()
+         view.postInvalidate()
+     }
+ 
+@@ -198,4 +197,4 @@ abstract class UdfpsAnimationViewController<T : UdfpsAnimationView>(
+      * Called when a view should announce an accessibility event.
+      */
+     open fun doAnnounceForAccessibility(str: String) {}
+-}
++}
+\ No newline at end of file
+diff --git a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsController.java b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsController.java
+index 412dc0577876..4d300d59fd65 100644
+--- a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsController.java
++++ b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsController.java
+@@ -86,7 +86,7 @@ import kotlin.Unit;
+ 
+ /**
+  * Shows and hides the under-display fingerprint sensor (UDFPS) overlay, handles UDFPS touch events,
+- * and toggles the UDFPS display mode.
++ * and coordinates triggering of the high-brightness mode (HBM).
+  *
+  * Note that the current architecture is designed so that a single {@link UdfpsController}
+  * controls/manages all UDFPS sensors. In other words, a single controller is registered with
+@@ -123,7 +123,7 @@ public class UdfpsController implements DozeReceiver {
+     @NonNull private final PowerManager mPowerManager;
+     @NonNull private final AccessibilityManager mAccessibilityManager;
+     @NonNull private final LockscreenShadeTransitionController mLockscreenShadeTransitionController;
+-    @Nullable private final UdfpsDisplayModeProvider mUdfpsDisplayMode;
++    @Nullable private final UdfpsHbmProvider mHbmProvider;
+     @NonNull private final ConfigurationController mConfigurationController;
+     @NonNull private final SystemClock mSystemClock;
+     @NonNull private final UnlockedScreenOffAnimationController
+@@ -135,6 +135,7 @@ public class UdfpsController implements DozeReceiver {
+     // Currently the UdfpsController supports a single UDFPS sensor. If devices have multiple
+     // sensors, this, in addition to a lot of the code here, will be updated.
+     @VisibleForTesting int mSensorId;
++    private boolean mHalControlsIllumination;
+     @VisibleForTesting @NonNull UdfpsOverlayParams mOverlayParams = new UdfpsOverlayParams();
+     // TODO(b/229290039): UDFPS controller should manage its dimensions on its own. Remove this.
+     @Nullable private Runnable mAuthControllerUpdateUdfpsLocation;
+@@ -146,9 +147,10 @@ public class UdfpsController implements DozeReceiver {
+     private int mActivePointerId = -1;
+     // The timestamp of the most recent touch log.
+     private long mTouchLogTime;
+-    // Sensor has a capture (good or bad) for this touch. No need to enable the UDFPS display mode
+-    // anymore for this particular touch event. In other words, do not enable the UDFPS mode until
+-    // the user touches the sensor area again.
++    // Sensor has a capture (good or bad) for this touch. Do not need to illuminate for this
++    // particular touch event anymore. In other words, do not illuminate until user lifts and
++    // touches the sensor area again.
++    // TODO: We should probably try to make touch/illumination things more of a FSM
+     private boolean mAcquiredReceived;
+ 
+     // The current request from FingerprintService. Null if no current request.
+@@ -209,8 +211,8 @@ public class UdfpsController implements DozeReceiver {
+                             mKeyguardUpdateMonitor, mDialogManager, mDumpManager,
+                             mLockscreenShadeTransitionController, mConfigurationController,
+                             mSystemClock, mKeyguardStateController,
+-                            mUnlockedScreenOffAnimationController,
+-                            mUdfpsDisplayMode, requestId, reason, callback,
++                            mUnlockedScreenOffAnimationController, mHalControlsIllumination,
++                            mHbmProvider, requestId, reason, callback,
+                             (view, event, fromUdfpsView) -> onTouch(requestId, event,
+                                     fromUdfpsView), mActivityLaunchAnimator)));
+         }
+@@ -234,7 +236,7 @@ public class UdfpsController implements DozeReceiver {
+                 int sensorId,
+                 @BiometricFingerprintConstants.FingerprintAcquired int acquiredInfo
+         ) {
+-            if (BiometricFingerprintConstants.shouldDisableUdfpsDisplayMode(acquiredInfo)) {
++            if (BiometricFingerprintConstants.shouldTurnOffHbm(acquiredInfo)) {
+                 boolean acquiredGood = acquiredInfo == FINGERPRINT_ACQUIRED_GOOD;
+                 mFgExecutor.execute(() -> {
+                     if (mOverlay == null) {
+@@ -245,7 +247,7 @@ public class UdfpsController implements DozeReceiver {
+                     mAcquiredReceived = true;
+                     final UdfpsView view = mOverlay.getOverlayView();
+                     if (view != null) {
+-                        view.unconfigureDisplay();
++                        view.stopIllumination(); // turn off HBM
+                     }
+                     if (acquiredGood) {
+                         mOverlay.onAcquiredGood();
+@@ -290,7 +292,7 @@ public class UdfpsController implements DozeReceiver {
+     /**
+      * Updates the overlay parameters and reconstructs or redraws the overlay, if necessary.
+      *
+-     * @param sensorId      sensor for which the overlay is getting updated.
++     * @param sensorId sensor for which the overlay is getting updated.
+      * @param overlayParams See {@link UdfpsOverlayParams}.
+      */
+     public void updateOverlayParams(int sensorId, @NonNull UdfpsOverlayParams overlayParams) {
+@@ -319,6 +321,11 @@ public class UdfpsController implements DozeReceiver {
+         mAuthControllerUpdateUdfpsLocation = r;
+     }
+ 
++    // TODO(b/229290039): UDFPS controller should manage its properties on its own. Remove this.
++    public void setHalControlsIllumination(boolean value) {
++        mHalControlsIllumination = value;
++    }
++
+     /**
+      * Calculate the pointer speed given a velocity tracker and the pointer id.
+      * This assumes that the velocity tracker has already been passed all relevant motion events.
+@@ -365,8 +372,8 @@ public class UdfpsController implements DozeReceiver {
+     }
+ 
+     /**
+-     * @param x                   coordinate
+-     * @param y                   coordinate
++     * @param x coordinate
++     * @param y coordinate
+      * @param relativeToUdfpsView true if the coordinates are relative to the udfps view; else,
+      *                            calculate from the display dimensions in portrait orientation
+      */
+@@ -419,7 +426,7 @@ public class UdfpsController implements DozeReceiver {
+         }
+ 
+         final UdfpsView udfpsView = mOverlay.getOverlayView();
+-        final boolean isDisplayConfigured = udfpsView.isDisplayConfigured();
++        final boolean isIlluminationRequested = udfpsView.isIlluminationRequested();
+         boolean handled = false;
+         switch (event.getActionMasked()) {
+             case MotionEvent.ACTION_OUTSIDE:
+@@ -503,7 +510,7 @@ public class UdfpsController implements DozeReceiver {
+                                 "minor: %.1f, major: %.1f, v: %.1f, exceedsVelocityThreshold: %b",
+                                 minor, major, v, exceedsVelocityThreshold);
+                         final long sinceLastLog = mSystemClock.elapsedRealtime() - mTouchLogTime;
+-                        if (!isDisplayConfigured && !mAcquiredReceived
++                        if (!isIlluminationRequested && !mAcquiredReceived
+                                 && !exceedsVelocityThreshold) {
+ 
+                             final float scale = mOverlayParams.getScaleFactor();
+@@ -594,7 +601,7 @@ public class UdfpsController implements DozeReceiver {
+             @NonNull VibratorHelper vibrator,
+             @NonNull UdfpsHapticsSimulator udfpsHapticsSimulator,
+             @NonNull UdfpsShell udfpsShell,
+-            @NonNull Optional<UdfpsDisplayModeProvider> udfpsDisplayMode,
++            @NonNull Optional<UdfpsHbmProvider> hbmProvider,
+             @NonNull KeyguardStateController keyguardStateController,
+             @NonNull DisplayManager displayManager,
+             @Main Handler mainHandler,
+@@ -626,7 +633,7 @@ public class UdfpsController implements DozeReceiver {
+         mPowerManager = powerManager;
+         mAccessibilityManager = accessibilityManager;
+         mLockscreenShadeTransitionController = lockscreenShadeTransitionController;
+-        mUdfpsDisplayMode = udfpsDisplayMode.orElse(null);
++        mHbmProvider = hbmProvider.orElse(null);
+         screenLifecycle.addObserver(mScreenObserver);
+         mScreenOn = screenLifecycle.getScreenState() == ScreenLifecycle.SCREEN_ON;
+         mConfigurationController = configurationController;
+@@ -800,14 +807,15 @@ public class UdfpsController implements DozeReceiver {
+     }
+ 
+     /**
+-     * Cancel UDFPS affordances - ability to hide the UDFPS overlay before the user explicitly
+-     * lifts their finger. Generally, this should be called on errors in the authentication flow.
++     * Cancel updfs scan affordances - ability to hide the HbmSurfaceView (white circle) before
++     * user explicitly lifts their finger. Generally, this should be called whenever udfps fails
++     * or errors.
+      *
+      * The sensor that triggers an AOD fingerprint interrupt (see onAodInterrupt) doesn't give
+      * ACTION_UP/ACTION_CANCEL events, so and AOD interrupt scan needs to be cancelled manually.
+      * This should be called when authentication either succeeds or fails. Failing to cancel the
+-     * scan will leave the display in the UDFPS mode until the user lifts their finger. On optical
+-     * sensors, this can result in illumination persisting for longer than necessary.
++     * scan will leave the screen in high brightness mode and will show the HbmSurfaceView until
++     * the user lifts their finger.
+      */
+     void onCancelUdfps() {
+         if (mOverlay != null && mOverlay.getOverlayView() != null) {
+@@ -869,7 +877,7 @@ public class UdfpsController implements DozeReceiver {
+         Trace.endAsyncSection("UdfpsController.e2e.onPointerDown", 0);
+         final UdfpsView view = mOverlay.getOverlayView();
+         if (view != null) {
+-            view.configureDisplay(() -> {
++            view.startIllumination(() -> {
+                 if (mAlternateTouchProvider != null) {
+                     mBiometricExecutor.execute(() -> {
+                         mAlternateTouchProvider.onUiReady();
+@@ -909,8 +917,8 @@ public class UdfpsController implements DozeReceiver {
+             }
+         }
+         mOnFingerDown = false;
+-        if (view.isDisplayConfigured()) {
+-            view.unconfigureDisplay();
++        if (view.isIlluminationRequested()) {
++            view.stopIllumination();
+         }
+ 
+         if (mCancelAodTimeoutAction != null) {
+diff --git a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsControllerOverlay.kt b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsControllerOverlay.kt
+index 1c62f8a4e508..ec720579fbee 100644
+--- a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsControllerOverlay.kt
++++ b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsControllerOverlay.kt
+@@ -77,7 +77,8 @@ class UdfpsControllerOverlay(
+     private val systemClock: SystemClock,
+     private val keyguardStateController: KeyguardStateController,
+     private val unlockedScreenOffAnimationController: UnlockedScreenOffAnimationController,
+-    private var udfpsDisplayModeProvider: UdfpsDisplayModeProvider,
++    private val halControlsIllumination: Boolean,
++    private var hbmProvider: UdfpsHbmProvider,
+     val requestId: Long,
+     @ShowReason val requestReason: Int,
+     private val controllerCallback: IUdfpsOverlayControllerCallback,
+@@ -101,8 +102,8 @@ class UdfpsControllerOverlay(
+         fitInsetsTypes = 0
+         gravity = android.view.Gravity.TOP or android.view.Gravity.LEFT
+         layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+-        flags = (Utils.FINGERPRINT_OVERLAY_LAYOUT_PARAM_FLAGS or
+-          WindowManager.LayoutParams.FLAG_SPLIT_TOUCH)
++        flags =
++            (Utils.FINGERPRINT_OVERLAY_LAYOUT_PARAM_FLAGS or WindowManager.LayoutParams.FLAG_SPLIT_TOUCH)
+         privateFlags = WindowManager.LayoutParams.PRIVATE_FLAG_TRUSTED_OVERLAY
+         // Avoid announcing window title.
+         accessibilityTitle = " "
+@@ -139,7 +140,8 @@ class UdfpsControllerOverlay(
+                     R.layout.udfps_view, null, false
+                 ) as UdfpsView).apply {
+                     overlayParams = params
+-                    setUdfpsDisplayModeProvider(udfpsDisplayModeProvider)
++                    halControlsIllumination = this@UdfpsControllerOverlay.halControlsIllumination
++                    setHbmProvider(hbmProvider)
+                     val animation = inflateUdfpsAnimation(this, controller)
+                     if (animation != null) {
+                         animation.init()
+@@ -248,8 +250,8 @@ class UdfpsControllerOverlay(
+         val wasShowing = isShowing
+ 
+         overlayView?.apply {
+-            if (isDisplayConfigured) {
+-                unconfigureDisplay()
++            if (isIlluminationRequested) {
++                stopIllumination()
+             }
+             windowManager.removeView(this)
+             setOnTouchListener(null)
+diff --git a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsDisplayModeProvider.java b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsDisplayModeProvider.java
+deleted file mode 100644
+index c6957acf1dc2..000000000000
+--- a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsDisplayModeProvider.java
++++ /dev/null
+@@ -1,48 +0,0 @@
+-/*
+- * Copyright (C) 2022 The Android Open Source Project
+- *
+- * Licensed under the Apache License, Version 2.0 (the "License");
+- * you may not use this file except in compliance with the License.
+- * You may obtain a copy of the License at
+- *
+- *      http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-
+-package com.android.systemui.biometrics;
+-
+-import android.annotation.Nullable;
+-
+-/**
+- * Interface for toggling the optimal display mode for the under-display fingerprint sensor
+- * (UDFPS). For example, the implementation might change the refresh rate and activate a
+- * high-brightness mode.
+- */
+-public interface UdfpsDisplayModeProvider {
+-
+-    /**
+-     * Enables the optimal display mode for UDFPS. The mode will persist until
+-     * {@link #disable(Runnable)} is called.
+-     *
+-     * This call must be made from the UI thread. The callback, if provided, will also be invoked
+-     * from the UI thread.
+-     *
+-     * @param onEnabled A runnable that will be executed once the mode is enabled.
+-     */
+-    void enable(@Nullable Runnable onEnabled);
+-
+-    /**
+-     * Disables the mode that was enabled by {@link #enable(Runnable)}.
+-     *
+-     * The call must be made from the UI thread. The callback, if provided, will also be invoked
+-     * from the UI thread.
+-     *
+-     * @param onDisabled A runnable that will be executed once mode is disabled.
+-     */
+-    void disable(@Nullable Runnable onDisabled);
+-}
+diff --git a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsDrawable.kt b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsDrawable.kt
+index 511b4e34fa0e..ee112b47e243 100644
+--- a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsDrawable.kt
++++ b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsDrawable.kt
+@@ -51,7 +51,7 @@ abstract class UdfpsDrawable(
+             invalidateSelf()
+         }
+ 
+-    var isDisplayConfigured: Boolean = false
++    var isIlluminationShowing: Boolean = false
+         set(showing) {
+             if (field == showing) {
+                 return
+diff --git a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsEnrollDrawable.java b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsEnrollDrawable.java
+index 1e359584ceec..1317492aefac 100644
+--- a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsEnrollDrawable.java
++++ b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsEnrollDrawable.java
+@@ -197,7 +197,7 @@ public class UdfpsEnrollDrawable extends UdfpsDrawable {
+ 
+     @Override
+     public void draw(@NonNull Canvas canvas) {
+-        if (isDisplayConfigured()) {
++        if (isIlluminationShowing()) {
+             return;
+         }
+ 
+diff --git a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsFpDrawable.kt b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsFpDrawable.kt
+index 9f6b6d7472f9..1afa36bd5000 100644
+--- a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsFpDrawable.kt
++++ b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsFpDrawable.kt
+@@ -23,7 +23,7 @@ import android.graphics.Canvas
+  */
+ class UdfpsFpDrawable(context: Context) : UdfpsDrawable(context) {
+     override fun draw(canvas: Canvas) {
+-        if (isDisplayConfigured) {
++        if (isIlluminationShowing) {
+             return
+         }
+         fingerprintDrawable.draw(canvas)
+diff --git a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsHbmProvider.java b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsHbmProvider.java
+new file mode 100644
+index 000000000000..f26dd5f57061
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsHbmProvider.java
+@@ -0,0 +1,55 @@
++/*
++ * Copyright (C) 2021 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.biometrics;
++
++import android.annotation.Nullable;
++
++/**
++ * Interface for controlling the high-brightness mode (HBM). UdfpsView can use this callback to
++ * enable the HBM while showing the fingerprint illumination, and to disable the HBM after the
++ * illumination is no longer necessary.
++ */
++public interface UdfpsHbmProvider {
++
++    /**
++     * UdfpsView will call this to enable the HBM when the fingerprint illumination is needed.
++     *
++     * This method is a no-op when some type of HBM is already enabled.
++     *
++     * This method must be called from the UI thread. The callback, if provided, will also be
++     * invoked from the UI thread.
++     *
++     * @param onHbmEnabled A runnable that will be executed once HBM is enabled.
++     *
++     * TODO(b/231335067): enableHbm with halControlsIllumination=true shouldn't make sense.
++     *     This only makes sense now because vendor code may rely on the side effects of enableHbm.
++     */
++    void enableHbm(boolean halControlsIllumination, @Nullable Runnable onHbmEnabled);
++
++    /**
++     * UdfpsView will call this to disable HBM when illumination is no longer needed.
++     *
++     * This method will disable HBM if HBM is enabled. Otherwise, if HBM is already disabled,
++     * this method is a no-op.
++     *
++     * The call must be made from the UI thread. The callback, if provided, will also be invoked
++     * from the UI thread.
++     *
++     * @param onHbmDisabled A runnable that will be executed once HBM is disabled.
++     */
++    void disableHbm(@Nullable Runnable onHbmDisabled);
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsIlluminator.java b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsIlluminator.java
+new file mode 100644
+index 000000000000..f85e9361ecf2
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsIlluminator.java
+@@ -0,0 +1,41 @@
++/*
++ * Copyright (C) 2021 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.biometrics;
++
++import android.annotation.Nullable;
++
++/**
++ * Interface that should be implemented by UI's that need to coordinate user touches,
++ * views/animations, and modules that start/stop display illumination.
++ */
++interface UdfpsIlluminator {
++    /**
++     * @param hbmProvider Invoked when HBM should be enabled or disabled.
++     */
++    void setHbmProvider(@Nullable UdfpsHbmProvider hbmProvider);
++
++    /**
++     * Invoked when illumination should start.
++     * @param onIlluminatedRunnable Invoked when the display has been illuminated.
++     */
++    void startIllumination(@Nullable Runnable onIlluminatedRunnable);
++
++    /**
++     * Invoked when illumination should end.
++     */
++    void stopIllumination();
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsKeyguardView.java b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsKeyguardView.java
+index bc274a0af95f..f28fedb9155b 100644
+--- a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsKeyguardView.java
++++ b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsKeyguardView.java
+@@ -101,11 +101,11 @@ public class UdfpsKeyguardView extends UdfpsAnimationView {
+     }
+ 
+     @Override
+-    void onDisplayConfiguring() {
++    void onIlluminationStarting() {
+     }
+ 
+     @Override
+-    void onDisplayUnconfigured() {
++    void onIlluminationStopped() {
+     }
+ 
+     @Override
+diff --git a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsView.kt b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsView.kt
+index a15456d46897..245c2252d57b 100644
+--- a/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsView.kt
++++ b/packages/SystemUI/src/com/android/systemui/biometrics/UdfpsView.kt
+@@ -36,12 +36,12 @@ private const val TAG = "UdfpsView"
+ class UdfpsView(
+     context: Context,
+     attrs: AttributeSet?
+-) : FrameLayout(context, attrs), DozeReceiver {
++) : FrameLayout(context, attrs), DozeReceiver, UdfpsIlluminator {
+ 
+     // sensorRect may be bigger than the sensor. True sensor dimensions are defined in
+     // overlayParams.sensorBounds
+     private val sensorRect = RectF()
+-    private var mUdfpsDisplayMode: UdfpsDisplayModeProvider? = null
++    private var hbmProvider: UdfpsHbmProvider? = null
+     private val debugTextPaint = Paint().apply {
+         isAntiAlias = true
+         color = Color.BLUE
+@@ -56,12 +56,19 @@ class UdfpsView(
+             a.getFloat(R.styleable.UdfpsView_sensorTouchAreaCoefficient, 0f)
+         }
+ 
++    private val onIlluminatedDelayMs = context.resources.getInteger(
++        com.android.internal.R.integer.config_udfps_illumination_transition_ms
++    ).toLong()
++
+     /** View controller (can be different for enrollment, BiometricPrompt, Keyguard, etc.). */
+     var animationViewController: UdfpsAnimationViewController<*>? = null
+ 
+     /** Parameters that affect the position and size of the overlay. */
+     var overlayParams = UdfpsOverlayParams()
+ 
++    /** Whether the HAL is responsible for enabling and disabling of LHBM. */
++    var halControlsIllumination: Boolean = true
++
+     /** Debug message. */
+     var debugMessage: String? = null
+         set(value) {
+@@ -69,12 +76,12 @@ class UdfpsView(
+             postInvalidate()
+         }
+ 
+-    /** True after the call to [configureDisplay] and before the call to [unconfigureDisplay]. */
+-    var isDisplayConfigured: Boolean = false
++    /** When [startIllumination] has been called but not stopped via [stopIllumination]. */
++    var isIlluminationRequested: Boolean = false
+         private set
+ 
+-    fun setUdfpsDisplayModeProvider(udfpsDisplayModeProvider: UdfpsDisplayModeProvider?) {
+-        mUdfpsDisplayMode = udfpsDisplayModeProvider
++    override fun setHbmProvider(provider: UdfpsHbmProvider?) {
++        hbmProvider = provider
+     }
+ 
+     // Don't propagate any touch events to the child views.
+@@ -117,7 +124,7 @@ class UdfpsView(
+ 
+     override fun onDraw(canvas: Canvas) {
+         super.onDraw(canvas)
+-        if (!isDisplayConfigured) {
++        if (!isIlluminationRequested) {
+             if (!debugMessage.isNullOrEmpty()) {
+                 canvas.drawText(debugMessage!!, 0f, 160f, debugTextPaint)
+             }
+@@ -140,15 +147,36 @@ class UdfpsView(
+             !(animationViewController?.shouldPauseAuth() ?: false)
+     }
+ 
+-    fun configureDisplay(onDisplayConfigured: Runnable) {
+-        isDisplayConfigured = true
+-        animationViewController?.onDisplayConfiguring()
+-        mUdfpsDisplayMode?.enable(onDisplayConfigured)
++    /**
++     * Start and run [onIlluminatedRunnable] when the first illumination frame reaches the panel.
++     */
++    override fun startIllumination(onIlluminatedRunnable: Runnable?) {
++        isIlluminationRequested = true
++        animationViewController?.onIlluminationStarting()
++        doIlluminate(onIlluminatedRunnable)
++    }
++
++    private fun doIlluminate(onIlluminatedRunnable: Runnable?) {
++        // TODO(b/231335067): enableHbm with halControlsIllumination=true shouldn't make sense.
++        // This only makes sense now because vendor code may rely on the side effects of enableHbm.
++        hbmProvider?.enableHbm(halControlsIllumination) {
++            if (onIlluminatedRunnable != null) {
++                if (halControlsIllumination) {
++                    onIlluminatedRunnable.run()
++                } else {
++                    // No framework API can reliably tell when a frame reaches the panel. A timeout
++                    // is the safest solution.
++                    postDelayed(onIlluminatedRunnable, onIlluminatedDelayMs)
++                }
++            } else {
++                Log.w(TAG, "doIlluminate | onIlluminatedRunnable is null")
++            }
++        }
+     }
+ 
+-    fun unconfigureDisplay() {
+-        isDisplayConfigured = false
+-        animationViewController?.onDisplayUnconfigured()
+-        mUdfpsDisplayMode?.disable(null /* onDisabled */)
++    override fun stopIllumination() {
++        isIlluminationRequested = false
++        animationViewController?.onIlluminationStopped()
++        hbmProvider?.disableHbm(null /* onHbmDisabled */)
+     }
+ }
+diff --git a/packages/SystemUI/src/com/android/systemui/dagger/SystemUIModule.java b/packages/SystemUI/src/com/android/systemui/dagger/SystemUIModule.java
+index 36e240a700b5..2a91330f2379 100644
+--- a/packages/SystemUI/src/com/android/systemui/dagger/SystemUIModule.java
++++ b/packages/SystemUI/src/com/android/systemui/dagger/SystemUIModule.java
+@@ -32,7 +32,7 @@ import com.android.systemui.BootCompleteCacheImpl;
+ import com.android.systemui.appops.dagger.AppOpsModule;
+ import com.android.systemui.assist.AssistModule;
+ import com.android.systemui.biometrics.AlternateUdfpsTouchProvider;
+-import com.android.systemui.biometrics.UdfpsDisplayModeProvider;
++import com.android.systemui.biometrics.UdfpsHbmProvider;
+ import com.android.systemui.biometrics.dagger.BiometricsModule;
+ import com.android.systemui.broadcast.BroadcastDispatcher;
+ import com.android.systemui.classifier.FalsingModule;
+@@ -211,7 +211,7 @@ public abstract class SystemUIModule {
+     abstract CentralSurfaces optionalCentralSurfaces();
+ 
+     @BindsOptionalOf
+-    abstract UdfpsDisplayModeProvider optionalUdfpsDisplayModeProvider();
++    abstract UdfpsHbmProvider optionalUdfpsHbmProvider();
+ 
+     @BindsOptionalOf
+     abstract AlternateUdfpsTouchProvider optionalUdfpsTouchProvider();
+diff --git a/packages/SystemUI/tests/src/com/android/systemui/biometrics/UdfpsControllerOverlayTest.kt b/packages/SystemUI/tests/src/com/android/systemui/biometrics/UdfpsControllerOverlayTest.kt
+index 5c564e65ea86..cb8358dd22cc 100644
+--- a/packages/SystemUI/tests/src/com/android/systemui/biometrics/UdfpsControllerOverlayTest.kt
++++ b/packages/SystemUI/tests/src/com/android/systemui/biometrics/UdfpsControllerOverlayTest.kt
+@@ -17,13 +17,23 @@
+ package com.android.systemui.biometrics
+ 
+ import android.graphics.Rect
+-import android.hardware.biometrics.BiometricOverlayConstants.*
++import android.hardware.biometrics.BiometricOverlayConstants.REASON_AUTH_BP
++import android.hardware.biometrics.BiometricOverlayConstants.REASON_AUTH_KEYGUARD
++import android.hardware.biometrics.BiometricOverlayConstants.REASON_AUTH_OTHER
++import android.hardware.biometrics.BiometricOverlayConstants.REASON_AUTH_SETTINGS
++import android.hardware.biometrics.BiometricOverlayConstants.REASON_ENROLL_ENROLLING
++import android.hardware.biometrics.BiometricOverlayConstants.REASON_ENROLL_FIND_SENSOR
++import android.hardware.biometrics.BiometricOverlayConstants.ShowReason
+ import android.hardware.fingerprint.FingerprintManager
+ import android.hardware.fingerprint.IUdfpsOverlayControllerCallback
+ import android.testing.AndroidTestingRunner
+ import android.testing.TestableLooper.RunWithLooper
+-import android.view.*
++import android.view.LayoutInflater
++import android.view.MotionEvent
++import android.view.View
++import android.view.Surface
+ import android.view.Surface.Rotation
++import android.view.WindowManager
+ import android.view.accessibility.AccessibilityManager
+ import androidx.test.filters.SmallTest
+ import com.android.keyguard.KeyguardUpdateMonitor
+@@ -55,6 +65,7 @@ import org.mockito.Mockito.verify
+ import org.mockito.junit.MockitoJUnit
+ import org.mockito.Mockito.`when` as whenever
+ 
++private const val HAL_CONTROLS_ILLUMINATION = true
+ private const val REQUEST_ID = 2L
+ 
+ // Dimensions for the current display resolution.
+@@ -84,9 +95,8 @@ class UdfpsControllerOverlayTest : SysuiTestCase() {
+     @Mock private lateinit var configurationController: ConfigurationController
+     @Mock private lateinit var systemClock: SystemClock
+     @Mock private lateinit var keyguardStateController: KeyguardStateController
+-    @Mock private lateinit var unlockedScreenOffAnimationController:
+-            UnlockedScreenOffAnimationController
+-    @Mock private lateinit var udfpsDisplayMode: UdfpsDisplayModeProvider
++    @Mock private lateinit var unlockedScreenOffAnimationController: UnlockedScreenOffAnimationController
++    @Mock private lateinit var hbmProvider: UdfpsHbmProvider
+     @Mock private lateinit var controllerCallback: IUdfpsOverlayControllerCallback
+     @Mock private lateinit var udfpsController: UdfpsController
+     @Mock private lateinit var udfpsView: UdfpsView
+@@ -120,9 +130,8 @@ class UdfpsControllerOverlayTest : SysuiTestCase() {
+             statusBarStateController, panelExpansionStateManager, statusBarKeyguardViewManager,
+             keyguardUpdateMonitor, dialogManager, dumpManager, transitionController,
+             configurationController, systemClock, keyguardStateController,
+-            unlockedScreenOffAnimationController, udfpsDisplayMode, REQUEST_ID, reason,
+-            controllerCallback, onTouch, activityLaunchAnimator
+-        )
++            unlockedScreenOffAnimationController, HAL_CONTROLS_ILLUMINATION, hbmProvider,
++            REQUEST_ID, reason, controllerCallback, onTouch, activityLaunchAnimator)
+         block()
+     }
+ 
+@@ -237,7 +246,7 @@ class UdfpsControllerOverlayTest : SysuiTestCase() {
+         val didShow = controllerOverlay.show(udfpsController, overlayParams)
+ 
+         verify(windowManager).addView(eq(controllerOverlay.overlayView), any())
+-        verify(udfpsView).setUdfpsDisplayModeProvider(eq(udfpsDisplayMode))
++        verify(udfpsView).setHbmProvider(eq(hbmProvider))
+         verify(udfpsView).animationViewController = any()
+         verify(udfpsView).addView(any())
+ 
+@@ -342,12 +351,12 @@ class UdfpsControllerOverlayTest : SysuiTestCase() {
+     }
+ 
+     @Test
+-    fun unconfigureDisplayOnHide() = withReason(REASON_AUTH_BP) {
+-        whenever(udfpsView.isDisplayConfigured).thenReturn(true)
++    fun stopIlluminatingOnHide() = withReason(REASON_AUTH_BP) {
++        whenever(udfpsView.isIlluminationRequested).thenReturn(true)
+ 
+         controllerOverlay.show(udfpsController, overlayParams)
+         controllerOverlay.hide()
+-        verify(udfpsView).unconfigureDisplay()
++        verify(udfpsView).stopIllumination()
+     }
+ 
+     @Test
+diff --git a/packages/SystemUI/tests/src/com/android/systemui/biometrics/UdfpsControllerTest.java b/packages/SystemUI/tests/src/com/android/systemui/biometrics/UdfpsControllerTest.java
+index 53e8c6e6d921..176c01f2daa4 100644
+--- a/packages/SystemUI/tests/src/com/android/systemui/biometrics/UdfpsControllerTest.java
++++ b/packages/SystemUI/tests/src/com/android/systemui/biometrics/UdfpsControllerTest.java
+@@ -126,7 +126,7 @@ public class UdfpsControllerTest extends SysuiTestCase {
+     @Mock
+     private WindowManager mWindowManager;
+     @Mock
+-    private UdfpsDisplayModeProvider mDisplayModeProvider;
++    private UdfpsHbmProvider mHbmProvider;
+     @Mock
+     private StatusBarStateController mStatusBarStateController;
+     @Mock
+@@ -194,7 +194,7 @@ public class UdfpsControllerTest extends SysuiTestCase {
+     private IUdfpsOverlayController mOverlayController;
+     @Captor private ArgumentCaptor<UdfpsView.OnTouchListener> mTouchListenerCaptor;
+     @Captor private ArgumentCaptor<View.OnHoverListener> mHoverListenerCaptor;
+-    @Captor private ArgumentCaptor<Runnable> mOnDisplayConfiguredCaptor;
++    @Captor private ArgumentCaptor<Runnable> mOnIlluminatedRunnableCaptor;
+     @Captor private ArgumentCaptor<ScreenLifecycle.Observer> mScreenObserverCaptor;
+     private ScreenLifecycle.Observer mScreenObserver;
+ 
+@@ -257,7 +257,7 @@ public class UdfpsControllerTest extends SysuiTestCase {
+                 mVibrator,
+                 mUdfpsHapticsSimulator,
+                 mUdfpsShell,
+-                Optional.of(mDisplayModeProvider),
++                Optional.of(mHbmProvider),
+                 mKeyguardStateController,
+                 mDisplayManager,
+                 mHandler,
+@@ -507,7 +507,7 @@ public class UdfpsControllerTest extends SysuiTestCase {
+         final float expectedMajor = touchMajor / scaleFactor;
+ 
+         // Configure UdfpsView to accept the ACTION_DOWN event
+-        when(mUdfpsView.isDisplayConfigured()).thenReturn(false);
++        when(mUdfpsView.isIlluminationRequested()).thenReturn(false);
+         when(mUdfpsView.isWithinSensorArea(anyFloat(), anyFloat())).thenReturn(true);
+ 
+         // Show the overlay.
+@@ -585,7 +585,7 @@ public class UdfpsControllerTest extends SysuiTestCase {
+     @Test
+     public void fingerDown() throws RemoteException {
+         // Configure UdfpsView to accept the ACTION_DOWN event
+-        when(mUdfpsView.isDisplayConfigured()).thenReturn(false);
++        when(mUdfpsView.isIlluminationRequested()).thenReturn(false);
+         when(mUdfpsView.isWithinSensorArea(anyFloat(), anyFloat())).thenReturn(true);
+         when(mKeyguardUpdateMonitor.isFingerprintDetectionRunning()).thenReturn(true);
+ 
+@@ -612,12 +612,12 @@ public class UdfpsControllerTest extends SysuiTestCase {
+         verify(mFingerprintManager, never()).onPointerDown(anyLong(), anyInt(), anyInt(), anyInt(),
+                 anyFloat(), anyFloat());
+         verify(mLatencyTracker).onActionStart(eq(LatencyTracker.ACTION_UDFPS_ILLUMINATE));
+-        // AND display configuration begins
+-        verify(mUdfpsView).configureDisplay(mOnDisplayConfiguredCaptor.capture());
++        // AND illumination begins
++        verify(mUdfpsView).startIllumination(mOnIlluminatedRunnableCaptor.capture());
+         verify(mLatencyTracker, never()).onActionEnd(eq(LatencyTracker.ACTION_UDFPS_ILLUMINATE));
+         verify(mKeyguardUpdateMonitor).onUdfpsPointerDown(eq((int) TEST_REQUEST_ID));
+-        // AND onDisplayConfigured notifies FingerprintManager about onUiReady
+-        mOnDisplayConfiguredCaptor.getValue().run();
++        // AND onIlluminatedRunnable notifies FingerprintManager about onUiReady
++        mOnIlluminatedRunnableCaptor.getValue().run();
+         mBiometricsExecutor.runAllReady();
+         InOrder inOrder = inOrder(mAlternateTouchProvider, mLatencyTracker);
+         inOrder.verify(mAlternateTouchProvider).onUiReady();
+@@ -635,10 +635,10 @@ public class UdfpsControllerTest extends SysuiTestCase {
+         // WHEN fingerprint is requested because of AOD interrupt
+         mUdfpsController.onAodInterrupt(0, 0, 2f, 3f);
+         mFgExecutor.runAllReady();
+-        // THEN display configuration begins
+-        // AND onDisplayConfigured notifies FingerprintManager about onUiReady
+-        verify(mUdfpsView).configureDisplay(mOnDisplayConfiguredCaptor.capture());
+-        mOnDisplayConfiguredCaptor.getValue().run();
++        // THEN illumination begins
++        // AND onIlluminatedRunnable that notifies FingerprintManager is set
++        verify(mUdfpsView).startIllumination(mOnIlluminatedRunnableCaptor.capture());
++        mOnIlluminatedRunnableCaptor.getValue().run();
+         mBiometricsExecutor.runAllReady();
+         verify(mAlternateTouchProvider).onPointerDown(eq(TEST_REQUEST_ID),
+                 eq(0), eq(0), eq(3f) /* minor */, eq(2f) /* major */);
+@@ -656,11 +656,11 @@ public class UdfpsControllerTest extends SysuiTestCase {
+         mFgExecutor.runAllReady();
+         when(mKeyguardUpdateMonitor.isFingerprintDetectionRunning()).thenReturn(true);
+         mUdfpsController.onAodInterrupt(0, 0, 0f, 0f);
+-        when(mUdfpsView.isDisplayConfigured()).thenReturn(true);
++        when(mUdfpsView.isIlluminationRequested()).thenReturn(true);
+         // WHEN it is cancelled
+         mUdfpsController.onCancelUdfps();
+-        // THEN the display is unconfigured
+-        verify(mUdfpsView).unconfigureDisplay();
++        // THEN the illumination is hidden
++        verify(mUdfpsView).stopIllumination();
+     }
+ 
+     @Test
+@@ -673,12 +673,12 @@ public class UdfpsControllerTest extends SysuiTestCase {
+         when(mKeyguardUpdateMonitor.isFingerprintDetectionRunning()).thenReturn(true);
+         mUdfpsController.onAodInterrupt(0, 0, 0f, 0f);
+         mFgExecutor.runAllReady();
+-        when(mUdfpsView.isDisplayConfigured()).thenReturn(true);
++        when(mUdfpsView.isIlluminationRequested()).thenReturn(true);
+         // WHEN it times out
+         mFgExecutor.advanceClockToNext();
+         mFgExecutor.runAllReady();
+-        // THEN the display is unconfigured
+-        verify(mUdfpsView).unconfigureDisplay();
++        // THEN the illumination is hidden
++        verify(mUdfpsView).stopIllumination();
+     }
+ 
+     @Test
+@@ -745,8 +745,8 @@ public class UdfpsControllerTest extends SysuiTestCase {
+         when(mKeyguardUpdateMonitor.isFingerprintDetectionRunning()).thenReturn(true);
+         mUdfpsController.onAodInterrupt(0, 0, 0f, 0f);
+ 
+-        // THEN display doesn't get configured because it's off
+-        verify(mUdfpsView, never()).configureDisplay(any());
++        // THEN no illumination because screen is off
++        verify(mUdfpsView, never()).startIllumination(any());
+     }
+ 
+     @Test
+@@ -762,14 +762,14 @@ public class UdfpsControllerTest extends SysuiTestCase {
+         when(mKeyguardUpdateMonitor.isFingerprintDetectionRunning()).thenReturn(false);
+         mUdfpsController.onAodInterrupt(0, 0, 0f, 0f);
+ 
+-        // THEN display doesn't get configured because it's off
+-        verify(mUdfpsView, never()).configureDisplay(any());
++        // THEN no illumination because screen is off
++        verify(mUdfpsView, never()).startIllumination(any());
+     }
+ 
+     @Test
+     public void playHapticOnTouchUdfpsArea_a11yTouchExplorationEnabled() throws RemoteException {
+         // Configure UdfpsView to accept the ACTION_DOWN event
+-        when(mUdfpsView.isDisplayConfigured()).thenReturn(false);
++        when(mUdfpsView.isIlluminationRequested()).thenReturn(false);
+         when(mUdfpsView.isWithinSensorArea(anyFloat(), anyFloat())).thenReturn(true);
+ 
+         // GIVEN that the overlay is showing and a11y touch exploration enabled
+@@ -804,7 +804,7 @@ public class UdfpsControllerTest extends SysuiTestCase {
+     @Test
+     public void noHapticOnTouchUdfpsArea_a11yTouchExplorationDisabled() throws RemoteException {
+         // Configure UdfpsView to accept the ACTION_DOWN event
+-        when(mUdfpsView.isDisplayConfigured()).thenReturn(false);
++        when(mUdfpsView.isIlluminationRequested()).thenReturn(false);
+         when(mUdfpsView.isWithinSensorArea(anyFloat(), anyFloat())).thenReturn(true);
+ 
+         // GIVEN that the overlay is showing and a11y touch exploration NOT enabled
+diff --git a/packages/SystemUI/tests/src/com/android/systemui/biometrics/UdfpsViewTest.kt b/packages/SystemUI/tests/src/com/android/systemui/biometrics/UdfpsViewTest.kt
+index b78c06391057..0327cfcf3450 100644
+--- a/packages/SystemUI/tests/src/com/android/systemui/biometrics/UdfpsViewTest.kt
++++ b/packages/SystemUI/tests/src/com/android/systemui/biometrics/UdfpsViewTest.kt
+@@ -36,12 +36,13 @@ import org.junit.Before
+ import org.junit.Rule
+ import org.junit.Test
+ import org.junit.runner.RunWith
++import org.mockito.ArgumentMatchers.anyBoolean
+ import org.mockito.Mock
+ import org.mockito.Mockito.never
+ import org.mockito.Mockito.nullable
+ import org.mockito.Mockito.verify
+-import org.mockito.Mockito.`when` as whenever
+ import org.mockito.junit.MockitoJUnit
++import org.mockito.Mockito.`when` as whenever
+ 
+ private const val SENSOR_X = 50
+ private const val SENSOR_Y = 250
+@@ -56,7 +57,7 @@ class UdfpsViewTest : SysuiTestCase() {
+     var rule = MockitoJUnit.rule()
+ 
+     @Mock
+-    lateinit var hbmProvider: UdfpsDisplayModeProvider
++    lateinit var hbmProvider: UdfpsHbmProvider
+     @Mock
+     lateinit var animationViewController: UdfpsAnimationViewController<UdfpsAnimationView>
+ 
+@@ -65,11 +66,13 @@ class UdfpsViewTest : SysuiTestCase() {
+     @Before
+     fun setup() {
+         context.setTheme(R.style.Theme_AppCompat)
++        context.orCreateTestableResources.addOverride(
++            com.android.internal.R.integer.config_udfps_illumination_transition_ms, 0)
+         view = LayoutInflater.from(context).inflate(R.layout.udfps_view, null) as UdfpsView
+         view.animationViewController = animationViewController
+         val sensorBounds = SensorLocationInternal("", SENSOR_X, SENSOR_Y, SENSOR_RADIUS).rect
+         view.overlayParams = UdfpsOverlayParams(sensorBounds, 1920, 1080, 1f, Surface.ROTATION_0)
+-        view.setUdfpsDisplayModeProvider(hbmProvider)
++        view.setHbmProvider(hbmProvider)
+         ViewUtils.attachView(view)
+     }
+ 
+@@ -140,27 +143,27 @@ class UdfpsViewTest : SysuiTestCase() {
+     @Test
+     fun startAndStopIllumination() {
+         val onDone: Runnable = mock()
+-        view.configureDisplay(onDone)
++        view.startIllumination(onDone)
+ 
+         val illuminator = withArgCaptor<Runnable> {
+-            verify(hbmProvider).enable(capture())
++            verify(hbmProvider).enableHbm(anyBoolean(), capture())
+         }
+ 
+-        assertThat(view.isDisplayConfigured).isTrue()
+-        verify(animationViewController).onDisplayConfiguring()
+-        verify(animationViewController, never()).onDisplayUnconfigured()
++        assertThat(view.isIlluminationRequested).isTrue()
++        verify(animationViewController).onIlluminationStarting()
++        verify(animationViewController, never()).onIlluminationStopped()
+         verify(onDone, never()).run()
+ 
+         // fake illumination event
+         illuminator.run()
+         waitForLooper()
+         verify(onDone).run()
+-        verify(hbmProvider, never()).disable(any())
++        verify(hbmProvider, never()).disableHbm(any())
+ 
+-        view.unconfigureDisplay()
+-        assertThat(view.isDisplayConfigured).isFalse()
+-        verify(animationViewController).onDisplayUnconfigured()
+-        verify(hbmProvider).disable(nullable(Runnable::class.java))
++        view.stopIllumination()
++        assertThat(view.isIlluminationRequested).isFalse()
++        verify(animationViewController).onIlluminationStopped()
++        verify(hbmProvider).disableHbm(nullable(Runnable::class.java))
+     }
+ 
+     private fun waitForLooper() = TestableLooper.get(this).processAllMessages()
+-- 
+2.34.1
+

@@ -1,0 +1,78 @@
+From 68c8a4202347c4ac0641b50a12db2b530f3d8c57 Mon Sep 17 00:00:00 2001
+From: ChonDoit <thphantomblog@gmail.com>
+Date: Fri, 14 Oct 2022 22:16:58 +0000
+Subject: [PATCH 2/2] Add HALv1 to soong
+
+| no_cameraserver
+| no_cameraserver_defaults
+| camera_in_mediaserver
+| camera_in_mediaserver_defaults
+---
+ build/soong/Android.bp | 51 ++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 51 insertions(+)
+
+diff --git a/build/soong/Android.bp b/build/soong/Android.bp
+index 02c2628c..8f4d6377 100644
+--- a/build/soong/Android.bp
++++ b/build/soong/Android.bp
+@@ -91,6 +91,57 @@ target_shim_libs {
+     },
+ }
+ 
++soong_config_module_type {
++    name: "no_cameraserver",
++    module_type: "cc_defaults",
++    config_namespace: "superiorGlobalVars",
++    bool_variables: ["has_legacy_camera_hal1"],
++    properties: [
++        "cppflags",
++    ],
++}
++
++no_cameraserver {
++    name: "no_cameraserver_defaults",
++    soong_config_variables: {
++        has_legacy_camera_hal1: {
++            cppflags: [
++                "-DNO_CAMERA_SERVER",
++                "-Wno-overloaded-virtual",
++            ],
++        },
++    },
++}
++
++soong_config_module_type {
++    name: "camera_in_mediaserver",
++    module_type: "cc_defaults",
++    config_namespace: "superiorGlobalVars",
++    bool_variables: ["has_legacy_camera_hal1"],
++    properties: [
++        "overrides",
++        "shared_libs",
++    ],
++}
++
++camera_in_mediaserver {
++    name: "camera_in_mediaserver_defaults",
++    defaults: ["no_cameraserver_defaults"],
++    soong_config_variables: {
++        has_legacy_camera_hal1: {
++            overrides: ["cameraserver"],
++            shared_libs: [
++                "android.hardware.camera.common@1.0",
++                "android.hardware.camera.device@3.4",
++                "android.hardware.camera.provider@2.6",
++                "libcameraservice",
++                "libgui",
++            ],
++        },
++    },
++}
++
++
+ soong_config_module_type {
+     name: "vendor_init",
+     module_type: "cc_defaults",
+-- 
+2.34.1
+
