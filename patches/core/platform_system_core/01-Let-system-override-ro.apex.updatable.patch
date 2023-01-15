@@ -1,13 +1,13 @@
 From f9e5497bd0b405f1a8b1aa911fac80d32f6effd8 Mon Sep 17 00:00:00 2001
 From: Pierre-Hugues Husson <phh@phh.me>
 Date: Wed, 23 Feb 2022 17:37:47 -0500
-Subject: [PATCH 6/6] Let system override ro.apex.updatable
+Subject: [PATCH 6/6] Let system override ro.apex.updatable and adb/secure
 
 APEX are broken because of a kernel bug in Android 10 devices
 So we have system set ro.apex.updatable = false
 However, vendor can override system, which prevents us from setting this
-to false
-So, ignore the override policy for this prop
+to false So, ignore the override policy for this prop
+Also, let system override adb/secure props, so we dont get stuck in ro.adb.secure=1 vendors
 ---
  init/property_service.cpp | 8 ++++++--
  1 file changed, 6 insertions(+), 2 deletions(-)
@@ -22,7 +22,7 @@ index 2d67bf5d7..49500428e 100644
                                   << "' with new value '" << value << "'";
 -                    it->second = value;
 -                }
-+                    if(strcmp("ro.apex.updatable", key) == 0) {
++                    if(strcmp("ro.apex.updatable", key) == 0 || strstr(key, "adb") || strstr(key, "secure")) {
 +                        LOG(WARNING) << "... Ignored";
 +                    } else {
 +                        it->second = value;

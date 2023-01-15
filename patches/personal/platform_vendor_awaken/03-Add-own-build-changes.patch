@@ -16,12 +16,10 @@ index 00000000..06ad36b8
 @@ -0,0 +1,26 @@
 +# The Gapps
 +$(call inherit-product, vendor/gapps/config.mk)
++WITH_FULL_THEGAPPS := false
 +
 +# Build
 +AWAKEN_BUILD := Treble
-+
-+# Own Gapps Flags
-+WITH_FULL_THEGAPPS := false
 +
 +# Secure Build
 +PHH-SECURE_BUILD := false
@@ -36,10 +34,13 @@ index 00000000..06ad36b8
 +PRODUCT_SYSTEM_DEFAULT_PROPERTIES += \
 +	persist.sys.binary_xml=false \
 +	dalvik.vm.dex2oat64.enabled=true \
-+	ro.system.ota.json_url=https://github.com/ChonDoit/treble_superior_patches/raw/13/ota.json
++   ro.awaken.maintainer=ChonDoe \
++	ro.system.ota.json_url=https://github.com/ChonDoit/treble_awaken_patches/raw/13/ota.json
 +    
 +# APN
-+PRODUCT_PACKAGES += apns-conf.xml
++PRODUCT_PACKAGES += \
++	apns-conf.xml
+
 -- 
 2.34.1
 

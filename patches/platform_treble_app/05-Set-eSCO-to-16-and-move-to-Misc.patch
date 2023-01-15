@@ -78,9 +78,9 @@ index 918d5cc..e9c8fac 100644
      </array>
 +
 +    <array name="pref_misc_transport_size">
-+	    <item>"0"</item>
-+	    <item>"8"</item>
-+	    <item>"16 (default)"</item>
++            <item>"0"</item>
++            <item>"8"</item>
++            <item>"16 (default)"</item>
 +            <item>"24"</item>
 +            <item>"32"</item>
 +    </array>
